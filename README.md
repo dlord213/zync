@@ -2,6 +2,11 @@
 
 A new Flutter project.
 
+## Installation
+```
+For Linux builds, libsecret-devel is a required dependency/library to install.
+```
+
 ## Getting Started
 
 This project is a starting point for a Flutter application.

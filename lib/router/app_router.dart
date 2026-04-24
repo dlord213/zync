@@ -3,6 +3,7 @@ import '../views/home_view.dart';
 import '../views/sender_view.dart';
 import '../views/receiver_view.dart';
 import '../views/history_view.dart';
+import '../views/qr_scanner_view.dart';
 
 final appRouter = GoRouter(
   initialLocation: '/',
@@ -22,6 +23,10 @@ final appRouter = GoRouter(
     GoRoute(
       path: '/history',
       builder: (context, state) => const HistoryView(),
+    ),
+    GoRoute(
+      path: '/qr-scan',
+      builder: (context, state) => const QRScannerView(),
     ),
   ],
 );

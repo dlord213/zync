@@ -51,6 +51,8 @@ dependencies:
   path_provider: ^2.1.5
   path: ^1.9.1
   intl: ^0.20.2
+  lucide_icons_flutter: ^3.1.13
+  mobile_scanner: ^7.2.0
 
 dev_dependencies:
   flutter_test:

@@ -5,7 +5,17 @@ import 'package:multicast_dns/multicast_dns.dart';
 
 class P2PService {
   HttpServer? _server;
-  final MDnsClient _mdns = MDnsClient();
+  late final MDnsClient _mdns = MDnsClient(
+    rawDatagramSocketFactory: (dynamic host, int port, {bool? reuseAddress, bool? reusePort, int? ttl}) {
+      return RawDatagramSocket.bind(
+        host,
+        port,
+        reuseAddress: true,
+        reusePort: Platform.isAndroid || Platform.isLinux || Platform.isWindows ? false : (reusePort ?? true),
+        ttl: ttl ?? 255,
+      );
+    },
+  );
 
   /// Starts a local HTTP server and broadcasts its presence via mDNS.
   Future<void> startServerAndBroadcast(File file) async {
