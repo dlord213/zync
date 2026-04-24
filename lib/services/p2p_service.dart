@@ -5,6 +5,37 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:multicast_dns/multicast_dns.dart';
 
+/// Resolves the device's LAN/WiFi IPv4 address.
+/// Falls back to '127.0.0.1' if none is found.
+Future<String> getLocalIp() async {
+  try {
+    final interfaces = await NetworkInterface.list(
+      type: InternetAddressType.IPv4,
+      includeLinkLocal: false,
+    );
+    for (final iface in interfaces) {
+      // Prefer wlan / en interfaces (WiFi) over loopback
+      final name = iface.name.toLowerCase();
+      if (name.contains('wlan') ||
+          name.contains('en') ||
+          name.contains('eth') ||
+          name.contains('wlp') ||
+          name.contains('eno')) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback) return addr.address;
+        }
+      }
+    }
+    // Fallback: return the first non-loopback address found
+    for (final iface in interfaces) {
+      for (final addr in iface.addresses) {
+        if (!addr.isLoopback) return addr.address;
+      }
+    }
+  } catch (_) {}
+  return '127.0.0.1';
+}
+
 // Service type Zync advertises and listens for
 const _kServiceType = '_zync._tcp.local';
 
@@ -52,17 +83,34 @@ class P2PService {
 
   // ── Server ──────────────────────────────────────────────────────────────────
 
-  /// Starts a local HTTP server and broadcasts its presence via mDNS.
-  Future<void> startServerAndBroadcast(File file) async {
+  /// Starts a local HTTP server that serves [file], and returns the real
+  /// local IP address so it can be encoded in the QR code.
+  Future<String> startServerAndBroadcast(File file) async {
     print('Starting server for file: ${file.path}');
 
-    final handler = const Pipeline().addHandler((Request request) {
-      return Response.ok('File sharing server running.');
+    // Resolve the true local IP before binding
+    final localIp = await getLocalIp();
+    print('Local IP: $localIp');
+
+    final fileName = file.path.split(Platform.pathSeparator).last;
+
+    final handler = const Pipeline().addHandler((Request request) async {
+      final bytes = await file.readAsBytes();
+      return Response.ok(
+        bytes,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Disposition': 'attachment; filename="$fileName"',
+          'Content-Length': '${bytes.length}',
+        },
+      );
     });
 
     try {
+      // Close any previous server first
+      await _server?.close(force: true);
       _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, 8080);
-      print('Serving at http://${_server!.address.host}:${_server!.port}');
+      print('Serving at http://$localIp:${_server!.port}');
 
       if (!_mdnsStarted) {
         await _mdns.start();
@@ -72,6 +120,8 @@ class P2PService {
     } catch (e) {
       print('Error starting server: $e');
     }
+
+    return localIp;
   }
 
   // ── Discovery stream ────────────────────────────────────────────────────────
