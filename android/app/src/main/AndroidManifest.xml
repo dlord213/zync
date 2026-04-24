@@ -12,7 +12,7 @@
     <!-- Android 14+ granular access for all files -->
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED"/>
     <application
-        android:label="zync"
+        android:label="Zync"
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon">
         <activity
