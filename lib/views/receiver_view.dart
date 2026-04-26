@@ -174,12 +174,22 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
       });
 
       // Resolve save directory
-      final Directory dir;
+      Directory dir;
       if (Platform.isAndroid) {
-        dir = (await getExternalStorageDirectory()) ??
-            await getApplicationDocumentsDirectory();
+        dir = Directory('/storage/emulated/0/Download/Zync');
+        if (!await dir.exists()) {
+          await dir.create(recursive: true);
+        }
       } else {
-        dir = await getApplicationDocumentsDirectory();
+        final d = await getDownloadsDirectory();
+        if (d != null) {
+          dir = Directory('${d.path}${Platform.pathSeparator}Zync');
+          if (!await dir.exists()) {
+            await dir.create(recursive: true);
+          }
+        } else {
+          dir = await getApplicationDocumentsDirectory();
+        }
       }
 
       // Avoid overwriting existing files

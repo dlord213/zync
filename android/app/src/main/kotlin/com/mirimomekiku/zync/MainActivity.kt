@@ -1,4 +1,4 @@
-package com.example.zync
+package com.mirimomekiku.zync
 
 import io.flutter.embedding.android.FlutterActivity
 
