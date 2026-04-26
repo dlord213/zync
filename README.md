@@ -5,20 +5,9 @@ Zync is a cross-platform peer-to-peer (P2P) file-sharing application designed fo
 ## Features
 
 - Cross-Platform Support: Seamlessly share files between Android, Windows, and Linux.
-- Local Network Discovery: Automatically discovers devices on the local network using multicast DNS (mDNS) without requiring manual IP entry.
 - QR Code Pairing: Quickly connect devices by scanning a dynamically generated QR code containing the server connection details (Camera scanning available on Android).
-- Modern Aesthetic: Features an AMOLED dark mode, large typography, and a "view at the top, interact at the bottom" layout philosophy.
 - Direct File Transfers: Hosts a local HTTP server on the sender device for direct, high-speed file transfers.
 - Activity History: Maintains a persistent local record of shared files.
-
-## Technical Stack
-
-- Framework: Flutter
-- State Management: Riverpod
-- Navigation: GoRouter
-- Networking: shelf (HTTP server), multicast_dns (discovery)
-- Local Storage: sqflite, sqflite_common_ffi (desktop support)
-- Utilities: qr_flutter, mobile_scanner, file_picker, device_info_plus
 
 ## Installation
 
