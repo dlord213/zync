@@ -140,13 +140,16 @@ class HomeView extends ConsumerWidget {
                   children: [
                     Row(
                       children: [
-                        const Icon(LucideIcons.info, color: ZyncTheme.orange, size: 20),
+                        const Icon(
+                          LucideIcons.info,
+                          color: ZyncTheme.orange,
+                          size: 20,
+                        ),
                         const SizedBox(width: 10),
                         Text(
                           'How to use Zync',
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                fontWeight: FontWeight.w700,
-                              ),
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                       ],
                     ),
@@ -155,24 +158,36 @@ class HomeView extends ConsumerWidget {
                       '1. Ensure both devices are on the same Wi-Fi.\n'
                       '2. Tap "Send" on one device and choose a file.\n'
                       '3. Tap "Receive" on the other device and select the sender from the radar, or scan their QR code.',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.5),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodyMedium?.copyWith(height: 1.5),
                     ),
                     const SizedBox(height: 16),
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: ZyncTheme.orangeDim,
+                        color: isDark
+                            ? ZyncTheme.orangeDim
+                            : Colors.grey.shade50,
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(LucideIcons.zap, color: ZyncTheme.orange, size: 18),
+                          const Icon(
+                            LucideIcons.zap,
+                            color: ZyncTheme.orange,
+                            size: 18,
+                          ),
                           const SizedBox(width: 10),
                           Expanded(
                             child: Text(
                               'Tip: For lightning fast transfer speeds, turn on your Mobile Hotspot and connect the receiver to it instead of your home Wi-Fi!',
-                              style: Theme.of(context).textTheme.bodySmall?.copyWith(height: 1.4, fontWeight: FontWeight.w500),
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(
+                                    height: 1.4,
+                                    fontWeight: FontWeight.w500,
+                                  ),
                             ),
                           ),
                         ],
