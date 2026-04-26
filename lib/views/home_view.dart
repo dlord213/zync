@@ -121,6 +121,69 @@ class HomeView extends ConsumerWidget {
             ),
           ),
 
+          // --- Instructions Section ---
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: isDark ? ZyncTheme.surface : Colors.white,
+                  borderRadius: BorderRadius.circular(ZyncTheme.radius),
+                  border: Border.all(
+                    color: ZyncTheme.orange.withOpacity(0.15),
+                    width: 1.5,
+                  ),
+                ),
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(LucideIcons.info, color: ZyncTheme.orange, size: 20),
+                        const SizedBox(width: 10),
+                        Text(
+                          'How to use Zync',
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    Text(
+                      '1. Ensure both devices are on the same Wi-Fi.\n'
+                      '2. Tap "Send" on one device and choose a file.\n'
+                      '3. Tap "Receive" on the other device and select the sender from the radar, or scan their QR code.',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.5),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: ZyncTheme.orangeDim,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(LucideIcons.zap, color: ZyncTheme.orange, size: 18),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              'Tip: For lightning fast transfer speeds, turn on your Mobile Hotspot and connect the receiver to it instead of your home Wi-Fi!',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(height: 1.4, fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
           // --- "Recent Activity" header ---
           SliverToBoxAdapter(
             child: Padding(

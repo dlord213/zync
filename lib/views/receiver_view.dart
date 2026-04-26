@@ -9,6 +9,8 @@ import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import '../main.dart';
 import '../services/p2p_service.dart';
+import '../providers/activity_log_provider.dart';
+import '../models/activity_log.dart';
 
 // ── Transfer state machine ────────────────────────────────────────────────────
 enum _TransferPhase { idle, connecting, downloading, done, error }
@@ -124,6 +126,7 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
     final ip = payload['ip'] as String?;
     final port = (payload['port'] as num?)?.toInt() ?? 8080;
     final fileName = (payload['file'] as String?) ?? 'zync_received_file';
+    final senderName = (payload['name'] as String?) ?? 'QR Sender';
 
     if (ip == null || ip.isEmpty) {
       setState(() {
@@ -133,10 +136,10 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
       return;
     }
 
-    await _startDownload(ip, port, defaultFileName: fileName);
+    await _startDownload(ip, port, defaultFileName: fileName, senderName: senderName);
   }
 
-  Future<void> _startDownload(String ip, int port, {String? defaultFileName}) async {
+  Future<void> _startDownload(String ip, int port, {String? defaultFileName, String senderName = 'Unknown Device'}) async {
     setState(() {
       _phase = _TransferPhase.connecting;
       _incomingFileName = defaultFileName ?? 'Connecting to sender...';
@@ -231,6 +234,13 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
           _savedFilePath = savePath;
           _downloadProgress = 1.0;
         });
+        
+        ref.read(activityLogProvider.notifier).addLog(ActivityLog(
+          fileName: fileName,
+          targetDeviceName: senderName,
+          type: 'received',
+          timestamp: DateTime.now().millisecondsSinceEpoch,
+        ));
       }
     } on SocketException catch (e) {
       if (mounted) {
@@ -351,7 +361,7 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
                     }
                   },
                   onDeviceTap: (device) {
-                    _startDownload(device.ip, device.port);
+                    _startDownload(device.ip, device.port, senderName: device.name);
                   },
                 ),
               _TransferPhase.connecting => _TransferProgressContent(

@@ -8,6 +8,8 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../main.dart';
 import '../services/p2p_service.dart';
 import '../providers/device_info_provider.dart';
+import '../providers/activity_log_provider.dart';
+import '../models/activity_log.dart';
 
 // ── State machine for the sender flow ────────────────────────────────────────
 enum _SenderState { pickFile, startingServer, ready }
@@ -49,8 +51,19 @@ class _SenderViewState extends ConsumerState<SenderView> {
   Future<void> _startServer(File file) async {
     try {
       final deviceInfo = await ref.read(deviceInfoProvider.future);
-      final ip = await _p2pService.startServerAndBroadcast(file);
       final fileName = file.path.split(Platform.pathSeparator).last;
+      
+      final ip = await _p2pService.startServerAndBroadcast(
+        file,
+        onFileRequested: () {
+          ref.read(activityLogProvider.notifier).addLog(ActivityLog(
+            fileName: fileName,
+            targetDeviceName: 'Receiver Device',
+            type: 'sent',
+            timestamp: DateTime.now().millisecondsSinceEpoch,
+          ));
+        },
+      );
 
       final qrPayload = {
         'ip': ip,

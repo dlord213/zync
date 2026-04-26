@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:bonsoir/bonsoir.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 
@@ -91,7 +92,7 @@ class P2PService {
 
   /// Starts a local HTTP server that serves [file], registers it on the local
   /// network via mDNS (bonsoir), and returns the real local IP address.
-  Future<String> startServerAndBroadcast(File file) async {
+  Future<String> startServerAndBroadcast(File file, {VoidCallback? onFileRequested}) async {
     print('Starting server for file: ${file.path}');
 
     final localIp = await getLocalIp();
@@ -101,6 +102,11 @@ class P2PService {
 
     final handler = const Pipeline().addHandler((Request request) async {
       final bytes = await file.readAsBytes();
+      
+      if (onFileRequested != null) {
+        onFileRequested();
+      }
+
       return Response.ok(
         bytes,
         headers: {
