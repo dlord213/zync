@@ -7,6 +7,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:archive/archive.dart';
+import 'package:path/path.dart' as p;
 import '../main.dart';
 import '../services/p2p_service.dart';
 import '../providers/activity_log_provider.dart';
@@ -124,11 +126,20 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
     }
 
     final ip = payload['ip'] as String?;
+    final ips = (payload['ips'] as List?)?.map((e) => e.toString()).toList();
     final port = (payload['port'] as num?)?.toInt() ?? 8080;
     final fileName = (payload['file'] as String?) ?? 'zync_received_file';
     final senderName = (payload['name'] as String?) ?? 'QR Sender';
 
-    if (ip == null || ip.isEmpty) {
+    final targetIps = <String>[];
+    if (ips != null) {
+      targetIps.addAll(ips);
+    }
+    if (ip != null && ip.isNotEmpty && !targetIps.contains(ip)) {
+      targetIps.add(ip);
+    }
+
+    if (targetIps.isEmpty) {
       setState(() {
         _phase = _TransferPhase.error;
         _transferError = 'QR code does not contain a valid IP address.';
@@ -136,10 +147,10 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
       return;
     }
 
-    await _startDownload(ip, port, defaultFileName: fileName, senderName: senderName);
+    await _startDownload(targetIps, port, defaultFileName: fileName, senderName: senderName);
   }
 
-  Future<void> _startDownload(String ip, int port, {String? defaultFileName, String senderName = 'Unknown Device'}) async {
+  Future<void> _startDownload(List<String> ips, int port, {String? defaultFileName, String senderName = 'Unknown Device'}) async {
     setState(() {
       _phase = _TransferPhase.connecting;
       _incomingFileName = defaultFileName ?? 'Connecting to sender...';
@@ -149,17 +160,45 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
     });
 
     try {
-      final url = Uri.parse('http://$ip:$port/');
-      print('Connecting to sender at $url');
+      print('Connecting to sender on IPs: $ips');
 
       final client = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 10);
-      final request = await client.getUrl(url);
-      final response = await request.close();
+        ..connectionTimeout = const Duration(seconds: 5);
 
-      if (response.statusCode != 200) {
-        throw Exception('Server responded with ${response.statusCode}');
+      final completer = Completer<_ConnectionResult>();
+      int remaining = ips.length;
+      final errors = [];
+
+      for (final ip in ips) {
+        final url = Uri.parse('http://$ip:$port/');
+        client.getUrl(url).then((request) {
+          return request.close();
+        }).then((response) {
+          if (response.statusCode == 200) {
+            if (!completer.isCompleted) {
+              completer.complete(_ConnectionResult(ip: ip, response: response));
+            } else {
+              response.listen((_) {}).cancel();
+            }
+          } else {
+            response.listen((_) {}).cancel();
+            throw Exception('Server responded with ${response.statusCode}');
+          }
+        }).catchError((err) {
+          errors.add('$ip: $err');
+          remaining--;
+          if (remaining == 0 && !completer.isCompleted) {
+            completer.completeError(
+              Exception('Could not reach sender on any address.\n\nDetails:\n${errors.join("\n")}'),
+            );
+          }
+        });
       }
+
+      final connectionResult = await completer.future;
+      final response = connectionResult.response;
+      final workingIp = connectionResult.ip;
+      print('Connected to sender at $workingIp');
 
       // Try to parse filename from headers if one was provided by the Sender
       String fileName = defaultFileName ?? 'zync_received_file';
@@ -228,15 +267,55 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
 
       print('File saved to: $savePath');
 
+      // ── Archive extraction ────────────────────────────────────────────────
+      String finalDisplayPath = savePath;
+      String finalDisplayName = fileName;
+      
+      if (fileName.endsWith('.zync')) {
+        final extractDirName = fileName.substring(0, fileName.length - 5);
+        final extractPath = p.join(dir.path, extractDirName);
+        
+        // Ensure unique extract path
+        String uniqueExtractPath = extractPath;
+        int folderSuffix = 1;
+        while (Directory(uniqueExtractPath).existsSync()) {
+          uniqueExtractPath = '$extractPath($folderSuffix)';
+          folderSuffix++;
+        }
+        
+        final extractDir = Directory(uniqueExtractPath);
+        await extractDir.create(recursive: true);
+        
+        final archiveBytes = await file.readAsBytes();
+        final archive = ZipDecoder().decodeBytes(archiveBytes);
+        
+        for (final archiveFile in archive) {
+          final filePath = p.join(uniqueExtractPath, archiveFile.name);
+          if (archiveFile.isFile) {
+            final f = File(filePath);
+            await f.create(recursive: true);
+            await f.writeAsBytes(archiveFile.content as List<int>);
+          } else {
+            await Directory(filePath).create(recursive: true);
+          }
+        }
+        
+        // Cleanup archive file
+        await file.delete();
+        finalDisplayPath = uniqueExtractPath;
+        finalDisplayName = p.basename(uniqueExtractPath);
+      }
+
       if (mounted) {
         setState(() {
           _phase = _TransferPhase.done;
-          _savedFilePath = savePath;
+          _savedFilePath = finalDisplayPath;
+          _incomingFileName = finalDisplayName; // Update displayed name to folder name
           _downloadProgress = 1.0;
         });
         
         ref.read(activityLogProvider.notifier).addLog(ActivityLog(
-          fileName: fileName,
+          fileName: finalDisplayName,
           targetDeviceName: senderName,
           type: 'received',
           timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -247,14 +326,30 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
         setState(() {
           _phase = _TransferPhase.error;
           _transferError =
-              'Could not reach sender at $ip:$port.\nMake sure both devices are on the same Wi-Fi network.\n\nDetail: ${e.message}';
+              'Could not reach sender at ${ips.join(", ")}:$port.\n\n'
+              'Possible issues:\n'
+              '1. Your Wi-Fi router might have "AP Isolation" or "Client Isolation" enabled, which blocks devices from communicating directly with each other.\n'
+              '2. A firewall on the sender device might be blocking incoming connections on port $port.\n\n'
+              'Workaround: Turn on a Mobile Hotspot on one device, connect the other device to it, and try again.\n\n'
+              'Detail: ${e.message}';
         });
       }
     } catch (e) {
       if (mounted) {
         setState(() {
           _phase = _TransferPhase.error;
-          _transferError = e.toString();
+          final errorMsg = e.toString();
+          if (errorMsg.contains('All connection attempts failed') || errorMsg.contains('Could not reach sender')) {
+            _transferError =
+                'Could not reach sender at ${ips.join(", ")}:$port.\n\n'
+                'Possible issues:\n'
+                '1. Your Wi-Fi router might have "AP Isolation" or "Client Isolation" enabled, which blocks devices from communicating directly with each other.\n'
+                '2. A firewall on the sender device might be blocking incoming connections on port $port.\n\n'
+                'Workaround: Turn on a Mobile Hotspot on one device, connect the other device to it, and try again.\n\n'
+                'Detail: $e';
+          } else {
+            _transferError = errorMsg;
+          }
         });
       }
     }
@@ -361,7 +456,18 @@ class _ReceiverViewState extends ConsumerState<ReceiverView>
                     }
                   },
                   onDeviceTap: (device) {
-                    _startDownload(device.ip, device.port, senderName: device.name);
+                    final targetIps = <String>[];
+                    if (device.ip.isNotEmpty) targetIps.add(device.ip);
+                    
+                    // Parse from name if possible
+                    final match = RegExp(r'Zync-(\d+)-(\d+)-(\d+)-(\d+)').firstMatch(device.name);
+                    if (match != null) {
+                      final parsedIp = '${match.group(1)}.${match.group(2)}.${match.group(3)}.${match.group(4)}';
+                      if (!targetIps.contains(parsedIp)) {
+                        targetIps.add(parsedIp);
+                      }
+                    }
+                    _startDownload(targetIps, device.port, senderName: device.name);
                   },
                 ),
               _TransferPhase.connecting => _TransferProgressContent(
@@ -1018,4 +1124,10 @@ class _RadarPainter extends CustomPainter {
       old.pulseValue != pulseValue ||
       old.blipValue != blipValue ||
       old.devices.length != devices.length;
+}
+
+class _ConnectionResult {
+  final String ip;
+  final HttpClientResponse response;
+  _ConnectionResult({required this.ip, required this.response});
 }

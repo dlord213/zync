@@ -4,6 +4,9 @@ import 'package:bonsoir/bonsoir.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
+import 'package:archive/archive.dart';
+import 'package:path/path.dart' as p;
+import 'package:flutter/services.dart';
 
 // Zync's mDNS service type (bonsoir format, no .local suffix)
 const _kServiceType = '_zync._tcp';
@@ -17,7 +20,7 @@ Future<String> getLocalIp() async {
       includeLinkLocal: false,
     );
     
-    // Filter out common virtual/tunnel adapters
+    // Filter out common virtual/tunnel/bridge adapters
     final validInterfaces = interfaces.where((iface) {
       final name = iface.name.toLowerCase();
       return !name.contains('docker') &&
@@ -28,18 +31,37 @@ Future<String> getLocalIp() async {
              !name.contains('zerotier') &&
              !name.contains('tun') &&
              !name.contains('tap') &&
-             !name.contains('wg');
+             !name.contains('wg') &&
+             !name.contains('veth') &&
+             !name.contains('br-') &&
+             !name.contains('bridge') &&
+             !name.contains('dummy') &&
+             !name.contains('ifb');
     }).toList();
 
-    // Prefer WiFi/Ethernet interfaces
+    // 1. Prefer Wi-Fi interfaces
     for (final iface in validInterfaces) {
       final name = iface.name.toLowerCase();
       if (name.contains('wlan') ||
-          name.contains('wi-fi') || // Windows
+          name.contains('wi-fi') ||
           name.contains('wifi') ||
-          name.contains('en') ||
+          name.contains('wlp')) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback && addr.address.startsWith(RegExp(r'^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'))) {
+             return addr.address;
+          }
+        }
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback) return addr.address;
+        }
+      }
+    }
+
+    // 2. Fallback to Ethernet interfaces
+    for (final iface in validInterfaces) {
+      final name = iface.name.toLowerCase();
+      if (name.contains('en') ||
           name.contains('eth') ||
-          name.contains('wlp') ||
           name.contains('eno')) {
         for (final addr in iface.addresses) {
           if (!addr.isLoopback && addr.address.startsWith(RegExp(r'^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'))) {
@@ -52,7 +74,7 @@ Future<String> getLocalIp() async {
       }
     }
     
-    // Fallback: return the first valid non-loopback address found
+    // 3. Fallback: return the first valid non-loopback address found
     for (final iface in validInterfaces) {
       for (final addr in iface.addresses) {
         if (!addr.isLoopback) return addr.address;
@@ -84,25 +106,50 @@ class DiscoveredDevice {
 }
 
 class P2PService {
+  static const _channel = MethodChannel('com.mirimomekiku.zync/system_settings');
+
   HttpServer? _server;
   BonsoirBroadcast? _broadcast;
   BonsoirDiscovery? _discovery;
 
+  /// Attempts to open the mobile hotspot settings page on Android.
+  Future<bool> openHotspotSettings() async {
+    if (Platform.isAndroid) {
+      try {
+        final result = await _channel.invokeMethod<bool>('openHotspotSettings');
+        return result ?? false;
+      } catch (e) {
+        print('Error launching hotspot settings: $e');
+        return false;
+      }
+    }
+    return false;
+  }
+
   // ── Server + advertisement ──────────────────────────────────────────────────
 
-  /// Starts a local HTTP server that serves [file], registers it on the local
+  /// Starts a local HTTP server that serves [entity], registers it on the local
   /// network via mDNS (bonsoir), and returns the real local IP address.
-  Future<String> startServerAndBroadcast(File file, {VoidCallback? onFileRequested}) async {
-    print('Starting server for file: ${file.path}');
+  Future<String> startServerAndBroadcast(FileSystemEntity entity, {VoidCallback? onFileRequested}) async {
+    print('Starting server for: ${entity.path}');
 
     final localIp = await getLocalIp();
     print('Local IP: $localIp');
 
-    final fileName = file.path.split(Platform.pathSeparator).last;
+    String fileName = p.basename(entity.path);
+    List<int> bytes;
+
+    if (entity is Directory) {
+      // It's a folder, zip it
+      fileName = '$fileName.zync';
+      bytes = await _archiveDirectory(entity);
+    } else if (entity is File) {
+      bytes = await entity.readAsBytes();
+    } else {
+      throw Exception('Unsupported file system entity type');
+    }
 
     final handler = const Pipeline().addHandler((Request request) async {
-      final bytes = await file.readAsBytes();
-      
       if (onFileRequested != null) {
         onFileRequested();
       }
@@ -164,7 +211,14 @@ class P2PService {
             final svc = event.service as ResolvedBonsoirService?;
             if (svc == null) return;
 
-            final ip = svc.host ?? '';
+            var ip = svc.host ?? '';
+            if (ip.isEmpty || ip == 'null') {
+              final match = RegExp(r'Zync-(\d+)-(\d+)-(\d+)-(\d+)').firstMatch(svc.name);
+              if (match != null) {
+                ip = '${match.group(1)}.${match.group(2)}.${match.group(3)}.${match.group(4)}';
+              }
+            }
+
             final key = '$ip:${svc.port}';
             if (ip.isEmpty || seen.contains(key) || controller.isClosed) {
               return;
@@ -203,5 +257,66 @@ class P2PService {
     _server = null;
     _broadcast = null;
     _discovery = null;
+  }
+
+  /// Recursively archives a directory into a zip byte array.
+  Future<List<int>> _archiveDirectory(Directory dir) async {
+    final archive = Archive();
+    final files = dir.listSync(recursive: true);
+
+    for (final file in files) {
+      if (file is File) {
+        final relativePath = p.relative(file.path, from: dir.path);
+        final fileBytes = await file.readAsBytes();
+        archive.addFile(ArchiveFile(relativePath, fileBytes.length, fileBytes));
+      }
+    }
+
+    return ZipEncoder().encode(archive);
+  }
+
+  /// Resolves all available local IPv4 addresses on the device,
+  /// filtering out loopback and common virtual/tunnel/bridge interfaces.
+  Future<List<String>> getAllLocalIps() async {
+    final ips = <String>[];
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLinkLocal: false,
+      );
+      
+      final validInterfaces = interfaces.where((iface) {
+        final name = iface.name.toLowerCase();
+        return !name.contains('docker') &&
+               !name.contains('vbox') &&
+               !name.contains('vmware') &&
+               !name.contains('virtual') &&
+               !name.contains('tailscale') &&
+               !name.contains('zerotier') &&
+               !name.contains('tun') &&
+               !name.contains('tap') &&
+               !name.contains('wg') &&
+               !name.contains('veth') &&
+               !name.contains('br-') &&
+               !name.contains('bridge') &&
+               !name.contains('dummy') &&
+               !name.contains('ifb');
+      }).toList();
+
+      for (final iface in validInterfaces) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback && !ips.contains(addr.address)) {
+            ips.add(addr.address);
+          }
+        }
+      }
+    } catch (_) {}
+    
+    // Fallback: if empty, add whatever getLocalIp returns
+    if (ips.isEmpty) {
+      final primaryIp = await getLocalIp();
+      ips.add(primaryIp);
+    }
+    return ips;
   }
 }

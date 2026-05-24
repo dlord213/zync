@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:path/path.dart' as p;
 import '../main.dart';
 import '../services/p2p_service.dart';
 import '../providers/device_info_provider.dart';
@@ -25,7 +26,7 @@ class _SenderViewState extends ConsumerState<SenderView> {
   final P2PService _p2pService = P2PService();
 
   _SenderState _state = _SenderState.pickFile;
-  File? _pickedFile;
+  FileSystemEntity? _pickedEntity;
   String? _qrData;
   String? _localIp;
   String? _errorMessage;
@@ -40,7 +41,7 @@ class _SenderViewState extends ConsumerState<SenderView> {
 
     final file = File(result.files.single.path!);
     setState(() {
-      _pickedFile = file;
+      _pickedEntity = file;
       _state = _SenderState.startingServer;
       _errorMessage = null;
     });
@@ -48,25 +49,49 @@ class _SenderViewState extends ConsumerState<SenderView> {
     await _startServer(file);
   }
 
-  Future<void> _startServer(File file) async {
+  Future<void> _pickFolder() async {
+    final result = await FilePicker.platform.getDirectoryPath();
+
+    if (result == null) return;
+
+    final dir = Directory(result);
+    setState(() {
+      _pickedEntity = dir;
+      _state = _SenderState.startingServer;
+      _errorMessage = null;
+    });
+
+    await _startServer(dir);
+  }
+
+  Future<void> _startServer(FileSystemEntity entity) async {
     try {
       final deviceInfo = await ref.read(deviceInfoProvider.future);
-      final fileName = file.path.split(Platform.pathSeparator).last;
-      
+      final fileName = p.basename(entity.path);
+
       final ip = await _p2pService.startServerAndBroadcast(
-        file,
+        entity,
         onFileRequested: () {
-          ref.read(activityLogProvider.notifier).addLog(ActivityLog(
-            fileName: fileName,
-            targetDeviceName: 'Receiver Device',
-            type: 'sent',
-            timestamp: DateTime.now().millisecondsSinceEpoch,
-          ));
+          ref
+              .read(activityLogProvider.notifier)
+              .addLog(
+                ActivityLog(
+                  fileName: entity is Directory
+                      ? '$fileName (Folder)'
+                      : fileName,
+                  targetDeviceName: 'Receiver Device',
+                  type: 'sent',
+                  timestamp: DateTime.now().millisecondsSinceEpoch,
+                ),
+              );
         },
       );
 
+      final ips = await _p2pService.getAllLocalIps();
+
       final qrPayload = {
         'ip': ip,
+        'ips': ips,
         'port': 8080,
         'name': deviceInfo.deviceName,
         'file': fileName,
@@ -93,10 +118,19 @@ class _SenderViewState extends ConsumerState<SenderView> {
     _p2pService.stop();
     setState(() {
       _state = _SenderState.pickFile;
-      _pickedFile = null;
+      _pickedEntity = null;
       _qrData = null;
       _localIp = null;
     });
+  }
+
+  Future<void> _refreshServer() async {
+    if (_pickedEntity != null) {
+      setState(() {
+        _state = _SenderState.startingServer;
+      });
+      await _startServer(_pickedEntity!);
+    }
   }
 
   @override
@@ -146,7 +180,7 @@ class _SenderViewState extends ConsumerState<SenderView> {
                       Text(
                         _state == _SenderState.ready
                             ? 'Share the QR code below'
-                            : 'Choose a file to share',
+                            : 'Choose a file/folder to share',
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ],
@@ -163,24 +197,47 @@ class _SenderViewState extends ConsumerState<SenderView> {
               ),
               child: switch (_state) {
                 _SenderState.pickFile => _PickFileContent(
-                    isDark: isDark,
-                    errorMessage: _errorMessage,
-                    onPick: _pickFile,
-                  ),
+                  isDark: isDark,
+                  errorMessage: _errorMessage,
+                  onPickFile: _pickFile,
+                  onPickFolder: _pickFolder,
+                  onOpenHotspot: () async {
+                    final success = await _p2pService.openHotspotSettings();
+                    if (!success && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Could not open Settings automatically. Please open Settings > Hotspot manually. (Restart app if recently updated).',
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                ),
                 _SenderState.startingServer => _LoadingContent(
-                    isDark: isDark,
-                    fileName: _pickedFile?.path
-                            .split(Platform.pathSeparator)
-                            .last ??
-                        '',
-                  ),
+                  isDark: isDark,
+                  fileName: p.basename(_pickedEntity?.path ?? ''),
+                ),
                 _SenderState.ready => _ServerReadyContent(
-                    isDark: isDark,
-                    qrData: _qrData!,
-                    localIp: _localIp!,
-                    file: _pickedFile!,
-                    onChangeFile: _changeFile,
-                  ),
+                  isDark: isDark,
+                  qrData: _qrData!,
+                  localIp: _localIp!,
+                  entity: _pickedEntity!,
+                  onChangeFile: _changeFile,
+                  onOpenHotspot: () async {
+                    final success = await _p2pService.openHotspotSettings();
+                    if (!success && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Could not open Settings automatically. Please open Settings > Hotspot manually. (Restart app if recently updated).',
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                  onRefresh: _refreshServer,
+                ),
               },
             ),
           ),
@@ -194,12 +251,16 @@ class _SenderViewState extends ConsumerState<SenderView> {
 class _PickFileContent extends StatelessWidget {
   final bool isDark;
   final String? errorMessage;
-  final VoidCallback onPick;
+  final VoidCallback onPickFile;
+  final VoidCallback onPickFolder;
+  final VoidCallback onOpenHotspot;
 
   const _PickFileContent({
     required this.isDark,
     required this.errorMessage,
-    required this.onPick,
+    required this.onPickFile,
+    required this.onPickFolder,
+    required this.onOpenHotspot,
   });
 
   @override
@@ -209,11 +270,11 @@ class _PickFileContent extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Big tap-to-pick card
+          // Big tap-to-pick card (File)
           GestureDetector(
-            onTap: onPick,
+            onTap: onPickFile,
             child: Container(
-              height: 220,
+              height: 160,
               decoration: BoxDecoration(
                 color: isDark ? ZyncTheme.surface : Colors.white,
                 borderRadius: BorderRadius.circular(ZyncTheme.radius),
@@ -226,28 +287,67 @@ class _PickFileContent extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Container(
-                    padding: const EdgeInsets.all(22),
+                    padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
                       color: ZyncTheme.orangeDim,
                       shape: BoxShape.circle,
                     ),
                     child: const Icon(
-                      LucideIcons.upload,
+                      LucideIcons.filePlus,
                       color: ZyncTheme.orange,
-                      size: 36,
+                      size: 28,
                     ),
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 16),
                   Text(
-                    'Tap to choose a file',
+                    'Pick a File',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          color: ZyncTheme.orange,
-                        ),
+                      color: ZyncTheme.orange,
+                      fontSize: 18,
+                    ),
                   ),
-                  const SizedBox(height: 6),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Big tap-to-pick card (Folder)
+          GestureDetector(
+            onTap: onPickFolder,
+            child: Container(
+              height: 160,
+              decoration: BoxDecoration(
+                color: isDark ? ZyncTheme.surface : Colors.white,
+                borderRadius: BorderRadius.circular(ZyncTheme.radius),
+                border: Border.all(
+                  color: ZyncTheme.orange.withOpacity(0.35),
+                  width: 1.5,
+                ),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: ZyncTheme.orangeDim,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      LucideIcons.folderPlus,
+                      color: ZyncTheme.orange,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   Text(
-                    'Any file type supported',
-                    style: Theme.of(context).textTheme.bodyMedium,
+                    'Pick a Folder',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      color: ZyncTheme.orange,
+                      fontSize: 18,
+                    ),
                   ),
                 ],
               ),
@@ -265,16 +365,18 @@ class _PickFileContent extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  const Icon(LucideIcons.circleAlert,
-                      color: Colors.red, size: 18),
+                  const Icon(
+                    LucideIcons.circleAlert,
+                    color: Colors.red,
+                    size: 18,
+                  ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       errorMessage!,
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodyMedium
-                          ?.copyWith(color: Colors.red),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodyMedium?.copyWith(color: Colors.red),
                     ),
                   ),
                 ],
@@ -283,6 +385,94 @@ class _PickFileContent extends StatelessWidget {
           ],
 
           const SizedBox(height: 24),
+
+          // Hotspot Card
+          Container(
+            decoration: BoxDecoration(
+              color: isDark ? ZyncTheme.surface : Colors.white,
+              borderRadius: BorderRadius.circular(ZyncTheme.radius),
+              border: Border.all(
+                color: ZyncTheme.green.withOpacity(0.2),
+                width: 1.5,
+              ),
+            ),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: ZyncTheme.greenDim,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: const Icon(
+                        LucideIcons.wifi,
+                        color: ZyncTheme.green,
+                        size: 20,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Direct Hotspot Mode',
+                            style: Theme.of(context).textTheme.bodyLarge
+                                ?.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            'Faster transfer, bypasses router blocks',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        LucideIcons.info,
+                        color: ZyncTheme.green,
+                        size: 22,
+                      ),
+                      onPressed: () => _showHotspotHelp(context, isDark),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: ZyncTheme.green,
+                          side: BorderSide(
+                            color: ZyncTheme.green.withOpacity(0.5),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              ZyncTheme.radiusSm,
+                            ),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        icon: const Icon(LucideIcons.settings, size: 18),
+                        label: const Text(
+                          'Enable Hotspot',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        onPressed: onOpenHotspot,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
 
           // Tips card
           Container(
@@ -294,21 +484,26 @@ class _PickFileContent extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('How it works',
-                    style: Theme.of(context).textTheme.titleLarge),
+                Text(
+                  'How it works',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
                 const SizedBox(height: 16),
                 _StepRow(
-                    icon: LucideIcons.filePlus,
-                    step: '1',
-                    text: 'Choose a file to share'),
+                  icon: LucideIcons.filePlus,
+                  step: '1',
+                  text: 'Choose a file/folder to share',
+                ),
                 _StepRow(
-                    icon: LucideIcons.qrCode,
-                    step: '2',
-                    text: 'A QR code is generated with your IP'),
+                  icon: LucideIcons.qrCode,
+                  step: '2',
+                  text: 'A QR code is generated with your IP',
+                ),
                 _StepRow(
-                    icon: LucideIcons.smartphoneNfc,
-                    step: '3',
-                    text: 'Receiver scans QR on another Zync device'),
+                  icon: LucideIcons.smartphoneNfc,
+                  step: '3',
+                  text: 'Receiver scans QR on another Zync device',
+                ),
               ],
             ),
           ),
@@ -322,8 +517,7 @@ class _StepRow extends StatelessWidget {
   final IconData icon;
   final String step;
   final String text;
-  const _StepRow(
-      {required this.icon, required this.step, required this.text});
+  const _StepRow({required this.icon, required this.step, required this.text});
 
   @override
   Widget build(BuildContext context) {
@@ -342,8 +536,7 @@ class _StepRow extends StatelessWidget {
           ),
           const SizedBox(width: 14),
           Expanded(
-            child: Text(text,
-                style: Theme.of(context).textTheme.bodyLarge),
+            child: Text(text, style: Theme.of(context).textTheme.bodyLarge),
           ),
         ],
       ),
@@ -377,8 +570,10 @@ class _LoadingContent extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 28),
-            Text('Starting server…',
-                style: Theme.of(context).textTheme.titleLarge),
+            Text(
+              'Starting server…',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
             const SizedBox(height: 8),
             Text(
               fileName.isEmpty ? 'Please wait' : 'Preparing "$fileName"',
@@ -397,30 +592,47 @@ class _ServerReadyContent extends StatelessWidget {
   final bool isDark;
   final String qrData;
   final String localIp;
-  final File file;
+  final FileSystemEntity entity;
   final VoidCallback onChangeFile;
+  final VoidCallback onOpenHotspot;
+  final VoidCallback onRefresh;
 
   const _ServerReadyContent({
     required this.isDark,
     required this.qrData,
     required this.localIp,
-    required this.file,
+    required this.entity,
     required this.onChangeFile,
+    required this.onOpenHotspot,
+    required this.onRefresh,
   });
 
-  String get _fileName => file.path.split(Platform.pathSeparator).last;
+  String get _fileName => p.basename(entity.path);
 
-  String get _fileSize {
+  String get _displaySize {
     try {
-      final bytes = file.lengthSync();
-      if (bytes < 1024) return '$bytes B';
-      if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-      if (bytes < 1073741824)
-        return '${(bytes / 1048576).toStringAsFixed(1)} MB';
-      return '${(bytes / 1073741824).toStringAsFixed(2)} GB';
+      if (entity is File) {
+        final bytes = (entity as File).lengthSync();
+        return _formatSize(bytes);
+      } else if (entity is Directory) {
+        int total = 0;
+        final list = (entity as Directory).listSync(recursive: true);
+        for (var f in list) {
+          if (f is File) total += f.lengthSync();
+        }
+        return '${list.whereType<File>().length} files, ${_formatSize(total)}';
+      }
+      return '—';
     } catch (_) {
       return '—';
     }
+  }
+
+  String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1048576) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1073741824) return '${(bytes / 1048576).toStringAsFixed(1)} MB';
+    return '${(bytes / 1073741824).toStringAsFixed(2)} GB';
   }
 
   @override
@@ -445,8 +657,11 @@ class _ServerReadyContent extends StatelessWidget {
                     color: ZyncTheme.orangeDim,
                     borderRadius: BorderRadius.circular(14),
                   ),
-                  child: const Icon(LucideIcons.file,
-                      color: ZyncTheme.orange, size: 20),
+                  child: Icon(
+                    entity is Directory ? LucideIcons.folder : LucideIcons.file,
+                    color: ZyncTheme.orange,
+                    size: 20,
+                  ),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -455,15 +670,16 @@ class _ServerReadyContent extends StatelessWidget {
                     children: [
                       Text(
                         _fileName,
-                        style:
-                            Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      Text(_fileSize,
-                          style: Theme.of(context).textTheme.bodyMedium),
+                      Text(
+                        _displaySize,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
                     ],
                   ),
                 ),
@@ -472,7 +688,9 @@ class _ServerReadyContent extends StatelessWidget {
                   onTap: onChangeFile,
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 8),
+                      horizontal: 14,
+                      vertical: 8,
+                    ),
                     decoration: BoxDecoration(
                       color: ZyncTheme.orangeDim,
                       borderRadius: BorderRadius.circular(20),
@@ -480,9 +698,9 @@ class _ServerReadyContent extends StatelessWidget {
                     child: Text(
                       'Change',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: ZyncTheme.orange,
-                            fontWeight: FontWeight.w600,
-                          ),
+                        color: ZyncTheme.orange,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
                 ),
@@ -548,8 +766,11 @@ class _ServerReadyContent extends StatelessWidget {
                     color: ZyncTheme.orangeDim,
                     borderRadius: BorderRadius.circular(14),
                   ),
-                  child: const Icon(LucideIcons.radio,
-                      color: ZyncTheme.orange, size: 20),
+                  child: const Icon(
+                    LucideIcons.radio,
+                    color: ZyncTheme.orange,
+                    size: 20,
+                  ),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -558,10 +779,9 @@ class _ServerReadyContent extends StatelessWidget {
                     children: [
                       Text(
                         'Server running',
-                        style:
-                            Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       Text(
                         'http://$localIp:8080',
@@ -575,9 +795,110 @@ class _ServerReadyContent extends StatelessWidget {
                   height: 14,
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
-                    valueColor:
-                        AlwaysStoppedAnimation<Color>(ZyncTheme.orange),
+                    valueColor: AlwaysStoppedAnimation<Color>(ZyncTheme.orange),
                   ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Hotspot management & troubleshooting card
+          Container(
+            decoration: BoxDecoration(
+              color: isDark ? ZyncTheme.surface : Colors.white,
+              borderRadius: BorderRadius.circular(ZyncTheme.radius),
+              border: Border.all(
+                color: ZyncTheme.green.withOpacity(0.15),
+                width: 1,
+              ),
+            ),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: ZyncTheme.greenDim,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(
+                        LucideIcons.wifi,
+                        color: ZyncTheme.green,
+                        size: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Direct Hotspot Mode',
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        LucideIcons.info,
+                        color: ZyncTheme.green,
+                        size: 20,
+                      ),
+                      onPressed: () => _showHotspotHelp(context, isDark),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'If the receiver cannot connect, enable your mobile hotspot, connect the receiver to it, and tap Refresh.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: ZyncTheme.green,
+                          side: BorderSide(
+                            color: ZyncTheme.green.withOpacity(0.4),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              ZyncTheme.radiusSm,
+                            ),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                        ),
+                        onPressed: onOpenHotspot,
+                        child: const Text('Hotspot Settings'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: ZyncTheme.orange,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(
+                              ZyncTheme.radiusSm,
+                            ),
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          elevation: 0,
+                        ),
+                        icon: const Icon(LucideIcons.refreshCw, size: 14),
+                        label: const Text('Refresh QR'),
+                        onPressed: onRefresh,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -586,4 +907,180 @@ class _ServerReadyContent extends StatelessWidget {
       ),
     );
   }
+}
+
+// ── Hotspot Help Bottom Sheet and Utilities ───────────────────────────────────
+
+void _showHotspotHelp(BuildContext context, bool isDark) {
+  showBottomSheet(
+    context: context,
+    backgroundColor: isDark ? ZyncTheme.surface : Colors.white,
+    showDragHandle: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(
+        top: Radius.circular(ZyncTheme.radius),
+      ),
+    ),
+    builder: (context) {
+      return Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+        ),
+        child: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Wi-Fi Hotspot Sharing',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(LucideIcons.x),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Creating a temporary Wi-Fi hotspot on your device is the fastest and most reliable way to transfer files between devices.',
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 24),
+                _buildBenefitRow(
+                  context,
+                  icon: LucideIcons.zap,
+                  title: 'Maximum Speed',
+                  subtitle:
+                      'Transfers bypass router limitations and use the full bandwidth of your device’s Wi-Fi chip.',
+                ),
+                const SizedBox(height: 16),
+                _buildBenefitRow(
+                  context,
+                  icon: LucideIcons.shieldAlert,
+                  title: 'Bypasses Router Blocks',
+                  subtitle:
+                      'Solves "No route to host" errors caused by router AP/Client Isolation (which stops local devices from talking).',
+                ),
+                const SizedBox(height: 16),
+                _buildBenefitRow(
+                  context,
+                  icon: LucideIcons.wifiOff,
+                  title: 'Works Completely Offline',
+                  subtitle:
+                      'No active internet connection or router needed. Share files in a park, plane, or car.',
+                ),
+                const SizedBox(height: 28),
+                Text(
+                  'How to configure:',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _buildStepRow(
+                  context,
+                  '1',
+                  'Tap "Enable Hotspot" or "Hotspot Settings" to open your device\'s configuration.',
+                ),
+                _buildStepRow(
+                  context,
+                  '2',
+                  'Turn on "Portable Hotspot" or "Internet Sharing".',
+                ),
+                _buildStepRow(
+                  context,
+                  '3',
+                  'On the receiver device, connect to the new Wi-Fi hotspot network.',
+                ),
+                _buildStepRow(
+                  context,
+                  '4',
+                  'Select files to send, scan the QR code, and enjoy maximum speed!',
+                ),
+                const SizedBox(height: 24),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+Widget _buildBenefitRow(
+  BuildContext context, {
+  required IconData icon,
+  required String title,
+  required String subtitle,
+}) {
+  return Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: ZyncTheme.greenDim,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: ZyncTheme.green, size: 20),
+      ),
+      const SizedBox(width: 14),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 2),
+            Text(subtitle, style: Theme.of(context).textTheme.bodyMedium),
+          ],
+        ),
+      ),
+    ],
+  );
+}
+
+Widget _buildStepRow(BuildContext context, String step, String text) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 10),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 24,
+          height: 24,
+          alignment: Alignment.center,
+          decoration: const BoxDecoration(
+            color: ZyncTheme.orangeDim,
+            shape: BoxShape.circle,
+          ),
+          child: Text(
+            step,
+            style: const TextStyle(
+              color: ZyncTheme.orange,
+              fontWeight: FontWeight.bold,
+              fontSize: 13,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(text, style: Theme.of(context).textTheme.bodyLarge),
+        ),
+      ],
+    ),
+  );
 }
