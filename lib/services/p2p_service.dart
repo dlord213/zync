@@ -130,23 +130,27 @@ class P2PService {
 
   /// Starts a local HTTP server that serves [entity], registers it on the local
   /// network via mDNS (bonsoir), and returns the real local IP address.
-  Future<String> startServerAndBroadcast(FileSystemEntity entity, {VoidCallback? onFileRequested}) async {
-    print('Starting server for: ${entity.path}');
+  Future<String> startServerAndBroadcast(dynamic entity, {VoidCallback? onFileRequested}) async {
+    print('Starting server for: ${entity is List ? 'Multiple Files' : (entity as FileSystemEntity).path}');
 
     final localIp = await getLocalIp();
     print('Local IP: $localIp');
 
-    String fileName = p.basename(entity.path);
+    String fileName = 'SharedFiles.zync';
     List<int> bytes;
 
     if (entity is Directory) {
       // It's a folder, zip it
-      fileName = '$fileName.zync';
+      fileName = '${p.basename(entity.path)}.zync';
       bytes = await _archiveDirectory(entity);
     } else if (entity is File) {
+      fileName = p.basename(entity.path);
       bytes = await entity.readAsBytes();
+    } else if (entity is List<File>) {
+      fileName = 'Files.zync';
+      bytes = await _archiveFiles(entity);
     } else {
-      throw Exception('Unsupported file system entity type');
+      throw Exception('Unsupported entity type');
     }
 
     final handler = const Pipeline().addHandler((Request request) async {
@@ -270,6 +274,19 @@ class P2PService {
         final fileBytes = await file.readAsBytes();
         archive.addFile(ArchiveFile(relativePath, fileBytes.length, fileBytes));
       }
+    }
+
+    return ZipEncoder().encode(archive);
+  }
+
+  /// Archives a list of files into a zip byte array.
+  Future<List<int>> _archiveFiles(List<File> files) async {
+    final archive = Archive();
+
+    for (final file in files) {
+      final relativePath = p.basename(file.path);
+      final fileBytes = await file.readAsBytes();
+      archive.addFile(ArchiveFile(relativePath, fileBytes.length, fileBytes));
     }
 
     return ZipEncoder().encode(archive);

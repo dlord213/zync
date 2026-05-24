@@ -26,27 +26,33 @@ class _SenderViewState extends ConsumerState<SenderView> {
   final P2PService _p2pService = P2PService();
 
   _SenderState _state = _SenderState.pickFile;
-  FileSystemEntity? _pickedEntity;
+  dynamic _pickedEntity;
   String? _qrData;
   String? _localIp;
   String? _errorMessage;
 
   Future<void> _pickFile() async {
     final result = await FilePicker.platform.pickFiles(
-      allowMultiple: false,
+      allowMultiple: true,
       type: FileType.any,
     );
 
-    if (result == null || result.files.single.path == null) return;
+    if (result == null || result.files.isEmpty) return;
 
-    final file = File(result.files.single.path!);
+    dynamic picked;
+    if (result.files.length == 1) {
+      picked = File(result.files.single.path!);
+    } else {
+      picked = result.files.map((f) => File(f.path!)).toList();
+    }
+
     setState(() {
-      _pickedEntity = file;
+      _pickedEntity = picked;
       _state = _SenderState.startingServer;
       _errorMessage = null;
     });
 
-    await _startServer(file);
+    await _startServer(picked);
   }
 
   Future<void> _pickFolder() async {
@@ -64,10 +70,19 @@ class _SenderViewState extends ConsumerState<SenderView> {
     await _startServer(dir);
   }
 
-  Future<void> _startServer(FileSystemEntity entity) async {
+  Future<void> _startServer(dynamic entity) async {
     try {
       final deviceInfo = await ref.read(deviceInfoProvider.future);
-      final fileName = p.basename(entity.path);
+      String fileName;
+      if (entity is Directory) {
+        fileName = p.basename(entity.path);
+      } else if (entity is File) {
+        fileName = p.basename(entity.path);
+      } else if (entity is List<File>) {
+        fileName = 'Files.zync';
+      } else {
+        fileName = 'Unknown';
+      }
 
       final ip = await _p2pService.startServerAndBroadcast(
         entity,
@@ -78,7 +93,7 @@ class _SenderViewState extends ConsumerState<SenderView> {
                 ActivityLog(
                   fileName: entity is Directory
                       ? '$fileName (Folder)'
-                      : fileName,
+                      : (entity is List ? 'Multiple Files' : fileName),
                   targetDeviceName: 'Receiver Device',
                   type: 'sent',
                   timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -216,7 +231,7 @@ class _SenderViewState extends ConsumerState<SenderView> {
                 ),
                 _SenderState.startingServer => _LoadingContent(
                   isDark: isDark,
-                  fileName: p.basename(_pickedEntity?.path ?? ''),
+                  fileName: _pickedEntity is List ? 'Multiple Files' : p.basename((_pickedEntity as FileSystemEntity?)?.path ?? ''),
                 ),
                 _SenderState.ready => _ServerReadyContent(
                   isDark: isDark,
@@ -300,7 +315,7 @@ class _PickFileContent extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Pick a File',
+                    'Pick File/s',
                     style: Theme.of(context).textTheme.titleLarge?.copyWith(
                       color: ZyncTheme.orange,
                       fontSize: 18,
@@ -592,7 +607,7 @@ class _ServerReadyContent extends StatelessWidget {
   final bool isDark;
   final String qrData;
   final String localIp;
-  final FileSystemEntity entity;
+  final dynamic entity;
   final VoidCallback onChangeFile;
   final VoidCallback onOpenHotspot;
   final VoidCallback onRefresh;
@@ -607,7 +622,10 @@ class _ServerReadyContent extends StatelessWidget {
     required this.onRefresh,
   });
 
-  String get _fileName => p.basename(entity.path);
+  String get _fileName {
+    if (entity is List) return 'Multiple Files';
+    return p.basename((entity as FileSystemEntity).path);
+  }
 
   String get _displaySize {
     try {
@@ -621,6 +639,12 @@ class _ServerReadyContent extends StatelessWidget {
           if (f is File) total += f.lengthSync();
         }
         return '${list.whereType<File>().length} files, ${_formatSize(total)}';
+      } else if (entity is List) {
+        int total = 0;
+        for (var f in (entity as List)) {
+          if (f is File) total += f.lengthSync();
+        }
+        return '${(entity as List).length} files, ${_formatSize(total)}';
       }
       return '—';
     } catch (_) {
@@ -658,7 +682,7 @@ class _ServerReadyContent extends StatelessWidget {
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: Icon(
-                    entity is Directory ? LucideIcons.folder : LucideIcons.file,
+                    entity is Directory ? LucideIcons.folder : (entity is List ? LucideIcons.files : LucideIcons.file),
                     color: ZyncTheme.orange,
                     size: 20,
                   ),
